@@ -124,6 +124,9 @@ static const uint8_t FONT_9[5]     = {0x06,0x49,0x49,0x29,0x1E};
 static const uint8_t FONT_COLON[5] = {0x00,0x36,0x36,0x00,0x00};
 static const uint8_t FONT_DASH[5]  = {0x08,0x08,0x08,0x08,0x08};
 static const uint8_t FONT_SPACE[5] = {0x00,0x00,0x00,0x00,0x00};
+static const uint8_t FONT_T[5]     = {0x01,0x01,0x7F,0x01,0x01};
+static const uint8_t FONT_C[5]     = {0x3E,0x41,0x41,0x41,0x22};
+static const uint8_t FONT_N[5]     = {0x7F,0x02,0x04,0x08,0x7F};
 
 static const uint8_t *get_font(char c)
 {
@@ -140,7 +143,32 @@ static const uint8_t *get_font(char c)
         case '9': return FONT_9;
         case ':': return FONT_COLON;
         case '-': return FONT_DASH;
+        case 'T': return FONT_T;
+        case 'C': return FONT_C;
+        case 'N': return FONT_N;
         default:  return FONT_SPACE;
+    }
+}
+
+static void oled_draw_char_small(uint8_t page, uint8_t col, char c)
+{
+    const uint8_t *font = get_font(c);
+
+    uint8_t buf[6];
+
+    memcpy(buf, font, 5);
+    buf[5] = 0x00;
+
+    oled_set_cursor(page, col);
+    oled_data(buf, sizeof(buf));
+}
+
+static void oled_print_small(uint8_t page, uint8_t col, const char *str)
+{
+    while (*str && col < 128) {
+        oled_draw_char_small(page, col, *str);
+        col += 6;
+        str++;
     }
 }
 
@@ -211,15 +239,6 @@ static void oled_draw_char_x3(uint8_t page, uint8_t col, char c)
 
     oled_set_cursor(page + 2, col);
     oled_data(p2, idx);
-}
-
-static void oled_print_x3(uint8_t page, uint8_t col, const char *str)
-{
-    while (*str) {
-        oled_draw_char_x3(page, col, *str);
-        col += 18;
-        str++;
-    }
 }
 
 static void oled_draw_char_big(uint8_t page, uint8_t col, char c)
@@ -388,6 +407,20 @@ static bool ntp_sync_once(void)
     return false;
 }
 
+static const char *get_weekday_str(int tm_wday)
+{
+    switch (tm_wday) {
+        case 0: return "CN"; // Sunday
+        case 1: return "T2"; // Monday
+        case 2: return "T3"; // Tuesday
+        case 3: return "T4"; // Wednesday
+        case 4: return "T5"; // Thursday
+        case 5: return "T6"; // Friday
+        case 6: return "T7"; // Saturday
+        default: return "--";
+    }
+}
+
 /* ================= APP MAIN ================= */
 
 void app_main(void)
@@ -413,6 +446,7 @@ void app_main(void)
     bool ntp_synced = false;
 
     char old_time_str[16] = "";
+    char old_date_str[40] = "";
 
     while (1) {
         bool wifi_now = g_wifi_connected;
@@ -452,6 +486,29 @@ void app_main(void)
             oled_print_big(2, 16, time_str);
 
             strcpy(old_time_str, time_str);
+        }
+
+        char date_str[40];
+
+        if (timeinfo.tm_year < (2024 - 1900)) {
+            strcpy(date_str, "-- -- -- ----");
+        } else {
+            snprintf(date_str,
+                    sizeof(date_str),
+                    "%s %02d-%02d-%04d",
+                    get_weekday_str(timeinfo.tm_wday),
+                    timeinfo.tm_mday,
+                    timeinfo.tm_mon + 1,
+                    timeinfo.tm_year + 1900);
+        }
+
+        if (strcmp(date_str, old_date_str) != 0) {
+            oled_clear_area(5, 0, 128);
+
+            uint8_t date_col = (128 - strlen(date_str) * 6) / 2;
+            oled_print_small(5, date_col, date_str);
+
+            strcpy(old_date_str, date_str);
         }
 
         vTaskDelay(pdMS_TO_TICKS(500));
