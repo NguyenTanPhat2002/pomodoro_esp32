@@ -1,19 +1,16 @@
 {
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "C_Cpp.default.intelliSenseMode": "gcc-x64",
   "C_Cpp.intelliSenseEngine": "default",
-  "idf.extensionActivationMode": "always",
-  "idf.openOcdConfigs": [
-    "board/esp32-wrover-kit-3.3v.cfg"
-  ],
-  "idf.portWin": "COM7",
-  "idf.currentSetup": "C:\\esp\\v5.5.4\\esp-idf",
-  "idf.customExtraVars": {
-    "IDF_TARGET": "esp32"
-  },
-  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "C_Cpp.errorSquiggles": "enabled",
+  "idf.adapterTargetName": "esp32",
+  "clangd.path": "C:\\Users\\LAPTOP\\.espressif\\tools\\esp-clang\\esp-18.1.2_20240912\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=d:\\Project comp\\VS Code\\pomodoro_esp32\\build"
+    "--compile-commands-dir=d:\\Project Modern System\\pomodoro_esp32\\build"
   ],
+  "idf.currentSetup": "C:\\Users\\LAPTOP\\esp\\v5.4.2\\esp-idf",
+  "idf.portWin": "COM3",
   "idf.flashType": "UART"
 }
