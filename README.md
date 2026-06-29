@@ -49,7 +49,7 @@ Ghi chú:
 
 ---
 
-## 5. Bảng GPIO tổng hợp
+## 2. Bảng GPIO tổng hợp
 
 ```text
 OLED I2C:
@@ -73,7 +73,7 @@ Buzzer:
 SIG  -> GPIO26
 ```
 
-## 2. Các GPIO nên tránh trên ESP32 DevKit V1
+## 3. Các GPIO nên tránh trên ESP32 DevKit V1
 
 | GPIO            | Lý do nên tránh                                  |
 | --------------- | ------------------------------------------------ |
