@@ -86,28 +86,6 @@ SIG  -> GPIO26
 
 ---
 
-## 3. Macro cấu hình chân đề xuất
-
-```c
-#define OLED_I2C_PORT      I2C_NUM_0
-#define OLED_SDA_PIN       GPIO_NUM_21
-#define OLED_SCL_PIN       GPIO_NUM_22
-#define OLED_ADDR          0x3C
-
-#define TFT_SPI_HOST       SPI2_HOST
-#define TFT_SCK_PIN        GPIO_NUM_18
-#define TFT_MOSI_PIN       GPIO_NUM_23
-#define TFT_CS_PIN         GPIO_NUM_14
-#define TFT_DC_PIN         GPIO_NUM_16
-#define TFT_RST_PIN        GPIO_NUM_17
-#define TFT_BL_PIN         GPIO_NUM_27
-
-#define ENCODER_CLK_PIN    GPIO_NUM_32
-#define ENCODER_DT_PIN     GPIO_NUM_33
-#define ENCODER_SW_PIN     GPIO_NUM_25
-
-#define BUZZER_PIN         GPIO_NUM_26
-```
 
 
 
