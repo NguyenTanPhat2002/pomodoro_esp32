@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,9 +18,11 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_sntp.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_http_server.h"
 
 
 #include "cJSON.h"
@@ -54,9 +57,18 @@
 #define SDA_PIN     21
 #define SCL_PIN     22
 
+#define HABIT_DEFAULT_TASK "KHONG CHOI GAME"
+#define HABIT_MAX_TASK_LEN 32
+#define HABIT_TARGET_DAYS 30
+
 static const char *TAG = "CLOCK_WEATHER";
 
 static volatile bool g_wifi_connected = false;
+static char g_ip_addr[16] = "0.0.0.0";
+
+static char g_habit_task[HABIT_MAX_TASK_LEN] = HABIT_DEFAULT_TASK;
+static time_t g_habit_start_epoch = 0;
+static int32_t g_habit_reset_count = 0;
 
 /* ================= OLED BASIC ================= */
 
@@ -176,6 +188,12 @@ static const uint8_t FONT_R[5]     = {0x7F,0x09,0x19,0x29,0x46};
 static const uint8_t FONT_S[5]     = {0x46,0x49,0x49,0x49,0x31};
 static const uint8_t FONT_U[5]     = {0x3F,0x40,0x40,0x40,0x3F};
 static const uint8_t FONT_W[5]     = {0x7F,0x20,0x18,0x20,0x7F};
+static const uint8_t FONT_J[5]     = {0x20,0x40,0x41,0x3F,0x01};
+static const uint8_t FONT_Q[5]     = {0x3E,0x41,0x51,0x21,0x5E};
+static const uint8_t FONT_V[5]     = {0x1F,0x20,0x40,0x20,0x1F};
+static const uint8_t FONT_X[5]     = {0x63,0x14,0x08,0x14,0x63};
+static const uint8_t FONT_Y[5]     = {0x07,0x08,0x70,0x08,0x07};
+static const uint8_t FONT_Z[5]     = {0x61,0x51,0x49,0x45,0x43};
 
 static const uint8_t *get_font(char c)
 {
@@ -201,17 +219,23 @@ static const uint8_t *get_font(char c)
         case 'G': return FONT_G;
         case 'H': return FONT_H;
         case 'I': return FONT_I;
+        case 'J': return FONT_J;
         case 'K': return FONT_K;
         case 'L': return FONT_L;
         case 'M': return FONT_M;
         case 'N': return FONT_N;
         case 'O': return FONT_O;
         case 'P': return FONT_P;
+        case 'Q': return FONT_Q;
         case 'R': return FONT_R;
         case 'S': return FONT_S;
         case 'T': return FONT_T;
         case 'U': return FONT_U;
+        case 'V': return FONT_V;
         case 'W': return FONT_W;
+        case 'X': return FONT_X;
+        case 'Y': return FONT_Y;
+        case 'Z': return FONT_Z;
         default:  return FONT_SPACE;
     }
 }
@@ -236,6 +260,51 @@ static void oled_print_small(uint8_t page, uint8_t col, const char *str)
         col += 6;
         str++;
     }
+}
+
+static void oled_print_center(uint8_t page, const char *str)
+{
+    size_t len = strlen(str);
+    uint8_t col = 0;
+
+    if ((len * 6) < 128) {
+        col = (128 - len * 6) / 2;
+    }
+
+    oled_print_small(page, col, str);
+}
+
+static void oled_draw_progress_bar(uint8_t page, uint8_t col, uint8_t width, uint8_t percent)
+{
+    if (page >= 8 || col >= 128 || width < 3) {
+        return;
+    }
+
+    if ((col + width) > 128) {
+        width = 128 - col;
+    }
+
+    if (percent > 100) {
+        percent = 100;
+    }
+
+    uint8_t buf[128];
+    memset(buf, 0x00, width);
+
+    uint8_t fill_cols = (uint8_t)(((uint16_t)(width - 2) * percent) / 100);
+
+    for (uint8_t i = 0; i < width; i++) {
+        if (i == 0 || i == (width - 1)) {
+            buf[i] = 0x7E;          // border left/right
+        } else if (i <= fill_cols) {
+            buf[i] = 0x7E;          // filled bar
+        } else {
+            buf[i] = 0x42;          // empty bar border
+        }
+    }
+
+    oled_set_cursor(page, col);
+    oled_data(buf, width);
 }
 
 /* ================= WIFI ICON ================= */
@@ -791,11 +860,20 @@ static void wifi_event_handler(void *arg,
 
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         g_wifi_connected = false;
+        strcpy(g_ip_addr, "0.0.0.0");
         esp_wifi_connect();
     }
 
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+
         g_wifi_connected = true;
+        snprintf(g_ip_addr,
+                 sizeof(g_ip_addr),
+                 IPSTR,
+                 IP2STR(&event->ip_info.ip));
+
+        ESP_LOGI(TAG, "Da ket noi WiFi, IP: %s", g_ip_addr);
     }
 }
 
@@ -901,6 +979,483 @@ static const char *get_weekday_str(int tm_wday)
         case 6: return "T7"; // Saturday
         default: return "--";
     }
+}
+
+/* ================= HABIT / STREAK WEB ================= */
+
+static bool app_time_is_valid(time_t now)
+{
+    struct tm timeinfo = {0};
+    localtime_r(&now, &timeinfo);
+    return timeinfo.tm_year >= (2024 - 1900);
+}
+
+static time_t get_midnight_epoch(time_t t)
+{
+    struct tm tm_info = {0};
+    localtime_r(&t, &tm_info);
+
+    tm_info.tm_hour = 0;
+    tm_info.tm_min = 0;
+    tm_info.tm_sec = 0;
+
+    return mktime(&tm_info);
+}
+
+static void habit_sanitize_task(const char *input, char *output, size_t output_size)
+{
+    size_t out_idx = 0;
+
+    if (output_size == 0) {
+        return;
+    }
+
+    for (size_t i = 0; input[i] != '\0' && out_idx < output_size - 1; i++) {
+        unsigned char ch = (unsigned char)input[i];
+
+        if (ch >= 'a' && ch <= 'z') {
+            ch = ch - 'a' + 'A';
+        }
+
+        if ((ch >= 'A' && ch <= 'Z') ||
+            (ch >= '0' && ch <= '9') ||
+            ch == ' ' ||
+            ch == '-') {
+            output[out_idx++] = (char)ch;
+        }
+    }
+
+    output[out_idx] = '\0';
+
+    while (out_idx > 0 && output[out_idx - 1] == ' ') {
+        output[out_idx - 1] = '\0';
+        out_idx--;
+    }
+
+    if (output[0] == '\0') {
+        strncpy(output, HABIT_DEFAULT_TASK, output_size - 1);
+        output[output_size - 1] = '\0';
+    }
+}
+
+static int hex_char_to_int(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+
+    return -1;
+}
+
+static void url_decode_inplace(char *str)
+{
+    char *src = str;
+    char *dst = str;
+
+    while (*src != '\0') {
+        if (*src == '+') {
+            *dst++ = ' ';
+            src++;
+        } else if (*src == '%' &&
+                   isxdigit((unsigned char)src[1]) &&
+                   isxdigit((unsigned char)src[2])) {
+            int hi = hex_char_to_int(src[1]);
+            int lo = hex_char_to_int(src[2]);
+
+            if (hi >= 0 && lo >= 0) {
+                *dst++ = (char)((hi << 4) | lo);
+                src += 3;
+            } else {
+                *dst++ = *src++;
+            }
+        } else {
+            *dst++ = *src++;
+        }
+    }
+
+    *dst = '\0';
+}
+
+static void habit_load_from_nvs(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("habit", NVS_READWRITE, &nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Khong mo duoc NVS habit: %s", esp_err_to_name(err));
+        return;
+    }
+
+    size_t task_len = sizeof(g_habit_task);
+    err = nvs_get_str(nvs, "task", g_habit_task, &task_len);
+
+    if (err != ESP_OK) {
+        strncpy(g_habit_task, HABIT_DEFAULT_TASK, sizeof(g_habit_task) - 1);
+        g_habit_task[sizeof(g_habit_task) - 1] = '\0';
+    }
+
+    int64_t start_epoch = 0;
+    err = nvs_get_i64(nvs, "start", &start_epoch);
+
+    if (err == ESP_OK) {
+        g_habit_start_epoch = (time_t)start_epoch;
+    }
+
+    int32_t reset_count = 0;
+    err = nvs_get_i32(nvs, "reset", &reset_count);
+
+    if (err == ESP_OK) {
+        g_habit_reset_count = reset_count;
+    }
+
+    nvs_close(nvs);
+}
+
+static void habit_save_to_nvs(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("habit", NVS_READWRITE, &nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Khong mo duoc NVS habit de luu: %s", esp_err_to_name(err));
+        return;
+    }
+
+    nvs_set_str(nvs, "task", g_habit_task);
+    nvs_set_i64(nvs, "start", (int64_t)g_habit_start_epoch);
+    nvs_set_i32(nvs, "reset", g_habit_reset_count);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+static void habit_ensure_start_date(time_t now)
+{
+    if (!app_time_is_valid(now)) {
+        return;
+    }
+
+    if (g_habit_start_epoch <= 0) {
+        g_habit_start_epoch = get_midnight_epoch(now);
+        habit_save_to_nvs();
+    }
+}
+
+static int habit_get_day(time_t now)
+{
+    if (!app_time_is_valid(now)) {
+        return 0;
+    }
+
+    habit_ensure_start_date(now);
+
+    time_t today_midnight = get_midnight_epoch(now);
+    time_t start_midnight = get_midnight_epoch(g_habit_start_epoch);
+
+    int day = (int)((today_midnight - start_midnight) / 86400) + 1;
+
+    if (day < 1) {
+        day = 1;
+    }
+
+    return day;
+}
+
+static void habit_get_start_date_str(char *buf, size_t buf_size)
+{
+    if (buf == NULL || buf_size == 0) {
+        return;
+    }
+
+    if (g_habit_start_epoch <= 0) {
+        snprintf(buf, buf_size, "-- --");
+        return;
+    }
+
+    struct tm start_info = {0};
+    localtime_r(&g_habit_start_epoch, &start_info);
+
+    snprintf(buf,
+             buf_size,
+             "%02d-%02d",
+             start_info.tm_mday,
+             start_info.tm_mon + 1);
+}
+
+static void habit_reset_today(time_t now)
+{
+    if (!app_time_is_valid(now)) {
+        return;
+    }
+
+    g_habit_start_epoch = get_midnight_epoch(now);
+    g_habit_reset_count++;
+    habit_save_to_nvs();
+}
+
+static void habit_set_task_and_reset(const char *new_task, time_t now)
+{
+    char clean_task[HABIT_MAX_TASK_LEN];
+
+    habit_sanitize_task(new_task, clean_task, sizeof(clean_task));
+
+    strncpy(g_habit_task, clean_task, sizeof(g_habit_task) - 1);
+    g_habit_task[sizeof(g_habit_task) - 1] = '\0';
+
+    if (app_time_is_valid(now)) {
+        g_habit_start_epoch = get_midnight_epoch(now);
+    } else {
+        g_habit_start_epoch = 0;
+    }
+
+    g_habit_reset_count = 0;
+    habit_save_to_nvs();
+}
+
+static void habit_make_task_line(char *out, size_t out_size)
+{
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+
+    strncpy(out, g_habit_task, out_size - 1);
+    out[out_size - 1] = '\0';
+
+    if (strlen(out) > 20) {
+        out[20] = '\0';
+    }
+}
+
+static void oled_show_habit(int day, bool wifi_ok)
+{
+    char line[32];
+    char task_line[24];
+    char start_date[8];
+
+    oled_clear();
+    oled_draw_wifi_icon(wifi_ok);
+
+    habit_make_task_line(task_line, sizeof(task_line));
+    habit_get_start_date_str(start_date, sizeof(start_date));
+
+    oled_print_small(0, wifi_ok ? 86 : 80, wifi_ok ? "ONLINE" : "OFFLINE");
+    oled_print_center(1, task_line);
+    oled_print_center(2, "STREAK DAY");
+
+    if (day <= 0) {
+        snprintf(line, sizeof(line), "---");
+    } else if (day > 999) {
+        snprintf(line, sizeof(line), "999");
+    } else {
+        snprintf(line, sizeof(line), "%03d", day);
+    }
+
+    uint8_t day_col = (128 - strlen(line) * 12) / 2;
+    oled_print_big(3, day_col, line);
+
+    uint8_t progress = 0;
+    if (day > 0) {
+        progress = (uint8_t)((day * 100) / HABIT_TARGET_DAYS);
+        if (progress > 100) {
+            progress = 100;
+        }
+    }
+
+    oled_draw_progress_bar(5, 14, 100, progress);
+
+    snprintf(line, sizeof(line), "START %s", start_date);
+    oled_print_small(6, 4, line);
+
+    snprintf(line, sizeof(line), "RESET %ld", (long)g_habit_reset_count);
+    oled_print_small(7, 4, line);
+}
+
+static esp_err_t habit_redirect_home(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    return httpd_resp_send(req, NULL, 0);
+}
+
+static esp_err_t habit_root_get_handler(httpd_req_t *req)
+{
+    time_t now;
+    char start_date[8];
+    static char html[5200];
+
+    time(&now);
+
+    int day = habit_get_day(now);
+    habit_get_start_date_str(start_date, sizeof(start_date));
+
+    int progress = 0;
+    if (day > 0) {
+        progress = (day * 100) / HABIT_TARGET_DAYS;
+        if (progress > 100) {
+            progress = 100;
+        }
+    }
+
+    snprintf(html,
+             sizeof(html),
+             "<!doctype html>"
+             "<html><head>"
+             "<meta charset='utf-8'>"
+             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+             "<title>ESP32 Habit</title>"
+             "<style>"
+             ":root{color-scheme:dark;--bg:#0b1020;--card:#151b2e;--line:#26314d;--text:#f8fafc;--muted:#94a3b8;--yellow:#facc15;--red:#ef4444;--green:#22c55e;}"
+             "*{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:Inter,Arial,sans-serif;background:radial-gradient(circle at top,#25345f 0,#0b1020 42rem);color:var(--text);padding:24px;}"
+             ".wrap{max-width:520px;margin:0 auto}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.brand{font-size:13px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase}.pill{font-size:12px;background:#0f172a;border:1px solid var(--line);color:#cbd5e1;padding:7px 10px;border-radius:999px}"
+             ".card{background:linear-gradient(180deg,#1b243b,#12182a);border:1px solid var(--line);border-radius:24px;padding:22px;margin:14px 0;box-shadow:0 18px 45px #0008}.task{font-size:26px;font-weight:800;line-height:1.15;margin:4px 0 12px}.label{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}.day{font-size:72px;line-height:.95;font-weight:900;color:var(--yellow);letter-spacing:-.05em;margin:8px 0 12px}"
+             ".bar{height:12px;background:#0f172a;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin:16px 0 14px}.bar>i{display:block;height:100%%;width:%d%%;background:linear-gradient(90deg,#facc15,#fb923c)}"
+             ".grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.mini{background:#0f172a;border:1px solid var(--line);border-radius:16px;padding:12px}.mini b{display:block;font-size:17px;margin-top:4px}.muted{color:var(--muted)}"
+             "button,input{width:100%%;border:0;border-radius:16px;font-size:16px}button{padding:16px 18px;font-weight:800;color:white;cursor:pointer}.danger{background:linear-gradient(135deg,#fb7185,#ef4444)}.save{background:linear-gradient(135deg,#34d399,#16a34a);margin-top:12px}input{margin-top:10px;padding:15px 16px;background:#f8fafc;color:#0f172a;outline:none}label{font-size:15px;color:#cbd5e1}.hint{font-size:13px;color:var(--muted);line-height:1.45;margin-top:10px}"
+             "</style></head><body><div class='wrap'>"
+             "<div class='top'><div class='brand'>ESP32 Habit</div><div class='pill'>%s</div></div>"
+             "<section class='card'>"
+             "<div class='label'>Current mission</div>"
+             "<div class='task'>%s</div>"
+             "<div class='label'>Clean streak</div>"
+             "<div class='day'>Day %03d</div>"
+             "<div class='bar'><i></i></div>"
+             "<div class='grid'>"
+             "<div class='mini'><span class='muted'>Start</span><b>%s</b></div>"
+             "<div class='mini'><span class='muted'>Reset</span><b>%ld</b></div>"
+             "<div class='mini'><span class='muted'>Goal</span><b>%dD</b></div>"
+             "</div></section>"
+             "<section class='card'><form action='/reset' method='get' onsubmit=\"return confirm('Reset streak ve ngay 1?')\"><button class='danger' type='submit'>Hom nay toi da choi game - Reset</button></form><div class='hint'>Bam nut nay khi bi pha streak. OLED se cap nhat lai trong vai giay.</div></section>"
+             "<section class='card'><form action='/set' method='get'><label>Doi task hien thi tren OLED</label><input name='task' maxlength='31' value='%s' placeholder='VD: KHONG CHOI GAME'><button class='save' type='submit'>Luu task va dem lai tu ngay 1</button></form></section>"
+             "</div></body></html>",
+             progress,
+             g_ip_addr,
+             g_habit_task,
+             day,
+             start_date,
+             (long)g_habit_reset_count,
+             HABIT_TARGET_DAYS,
+             g_habit_task);
+
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t habit_reset_get_handler(httpd_req_t *req)
+{
+    time_t now;
+    time(&now);
+
+    habit_reset_today(now);
+    return habit_redirect_home(req);
+}
+
+static esp_err_t habit_set_get_handler(httpd_req_t *req)
+{
+    char query[160] = {0};
+    char task_value[HABIT_MAX_TASK_LEN * 3] = {0};
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query,
+                                  "task",
+                                  task_value,
+                                  sizeof(task_value)) == ESP_OK) {
+            time_t now;
+            time(&now);
+
+            url_decode_inplace(task_value);
+            habit_set_task_and_reset(task_value, now);
+        }
+    }
+
+    return habit_redirect_home(req);
+}
+
+static esp_err_t habit_api_get_handler(httpd_req_t *req)
+{
+    time_t now;
+    char start_date[8];
+    static char json[256];
+
+    time(&now);
+
+    int day = habit_get_day(now);
+    habit_get_start_date_str(start_date, sizeof(start_date));
+
+    snprintf(json,
+             sizeof(json),
+             "{"
+             "\"ok\":true,"
+             "\"task\":\"%s\","
+             "\"day\":%d,"
+             "\"start\":\"%s\","
+             "\"reset\":%ld"
+             "}",
+             g_habit_task,
+             day,
+             start_date,
+             (long)g_habit_reset_count);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+}
+
+static void habit_web_server_start(void)
+{
+    static httpd_handle_t server = NULL;
+
+    if (server != NULL) {
+        return;
+    }
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.lru_purge_enable = true;
+
+    if (httpd_start(&server, &config) != ESP_OK) {
+        ESP_LOGE(TAG, "Khong start duoc habit web server");
+        return;
+    }
+
+    httpd_uri_t root_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = habit_root_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t reset_uri = {
+        .uri = "/reset",
+        .method = HTTP_GET,
+        .handler = habit_reset_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t set_uri = {
+        .uri = "/set",
+        .method = HTTP_GET,
+        .handler = habit_set_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t api_uri = {
+        .uri = "/api",
+        .method = HTTP_GET,
+        .handler = habit_api_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_register_uri_handler(server, &root_uri);
+    httpd_register_uri_handler(server, &reset_uri);
+    httpd_register_uri_handler(server, &set_uri);
+    httpd_register_uri_handler(server, &api_uri);
+
+    ESP_LOGI(TAG, "Habit web server da san sang");
 }
 
 /* ================= WEATHER API ================= */
@@ -1152,31 +1707,7 @@ static void tft_show_message(const char *line1, const char *line2)
     tft_draw_text(28, 72, line2, COLOR_GRAY, COLOR_BLACK, 1);
 }
 
-static void oled_show_status(const char *date_str,
-                             bool wifi_ok,
-                             bool api_ok,
-                             const char *update_time)
-{
-    char line[32];
 
-    oled_clear();
-    oled_draw_wifi_icon(wifi_ok);
-
-    uint8_t date_col = 0;
-    size_t date_len = strlen(date_str);
-
-    if ((date_len * 6) < 128) {
-        date_col = (128 - date_len * 6) / 2;
-    }
-
-    oled_print_small(2, date_col, date_str);
-
-    oled_print_small(4, 22, wifi_ok ? "WIFI OK" : "WIFI LOST");
-    oled_print_small(5, 22, api_ok ? "API OK" : "API FAIL");
-
-    snprintf(line, sizeof(line), "UPD %s", update_time);
-    oled_print_small(6, 22, line);
-}
 
 
 /* ================= APP MAIN ================= */
@@ -1202,6 +1733,8 @@ void app_main(void)
     tft_show_message("DANG DOI", "Ket noi WiFi");
 
     wifi_init();
+    habit_load_from_nvs();
+    habit_web_server_start();
 
     bool old_wifi_state = false;
     bool ntp_synced = false;
@@ -1210,8 +1743,6 @@ void app_main(void)
     char old_oled_key[96] = "";
 
     bool weather_loaded_once = false;
-    bool weather_api_ok = false;
-    char weather_update_time[8] = "--:--";
 
     TickType_t last_weather_tick = 0;
     const TickType_t weather_update_interval = pdMS_TO_TICKS(5 * 60 * 1000); // 5 phút
@@ -1250,20 +1781,6 @@ void app_main(void)
                     timeinfo.tm_sec);
         }
 
-        char date_str[40];
-
-        if (timeinfo.tm_year < (2024 - 1900)) {
-            strcpy(date_str, "-- -- -- ----");
-        } else {
-            snprintf(date_str,
-                    sizeof(date_str),
-                    "%s %02d-%02d-%04d",
-                    get_weekday_str(timeinfo.tm_wday),
-                    timeinfo.tm_mday,
-                    timeinfo.tm_mon + 1,
-                    timeinfo.tm_year + 1900);
-        }
-
         if (weather_loaded_once &&
             timeinfo.tm_year >= (2024 - 1900) &&
             now != old_tft_second) {
@@ -1281,30 +1798,13 @@ void app_main(void)
             tft_show_message("THOI TIET", "Dang cap nhat");
 
             if (weather_fetch(&weather)) {
-                if (strlen(weather.time) >= 16) {
-                    snprintf(weather_update_time,
-                             sizeof(weather_update_time),
-                             "%.5s",
-                             &weather.time[11]);
-                } else if (timeinfo.tm_year >= (2024 - 1900)) {
-                    snprintf(weather_update_time,
-                             sizeof(weather_update_time),
-                             "%02d:%02d",
-                             timeinfo.tm_hour,
-                             timeinfo.tm_min);
-                } else {
-                    strcpy(weather_update_time, "--:--");
-                }
-
                 tft_show_weather(&weather, time_str);
                 old_tft_second = now;
 
                 weather_loaded_once = true;
-                weather_api_ok = true;
                 last_weather_tick = now_tick;
             } else {
                 ESP_LOGW(TAG, "Lay thoi tiet that bai");
-                weather_api_ok = false;
 
                 if (!weather_loaded_once) {
                     tft_show_message("LOI API", "Thu lai sau");
@@ -1312,21 +1812,27 @@ void app_main(void)
             }
         }
 
-        char oled_key[96];
+        if (timeinfo.tm_year >= (2024 - 1900)) {
+            habit_ensure_start_date(now);
+        }
+
+        int habit_day = habit_get_day(now);
+
+        char habit_start_date[8];
+        habit_get_start_date_str(habit_start_date, sizeof(habit_start_date));
+
+        char oled_key[128];
         snprintf(oled_key,
                  sizeof(oled_key),
-                 "%s|%d|%d|%s",
-                 date_str,
+                 "%s|%d|%d|%s|%ld",
+                 g_habit_task,
+                 habit_day,
                  wifi_now ? 1 : 0,
-                 weather_api_ok ? 1 : 0,
-                 weather_update_time);
+                 habit_start_date,
+                 (long)g_habit_reset_count);
 
         if (strcmp(oled_key, old_oled_key) != 0) {
-            oled_show_status(date_str,
-                             wifi_now,
-                             weather_api_ok,
-                             weather_update_time);
-
+            oled_show_habit(habit_day, wifi_now);
             strcpy(old_oled_key, oled_key);
         }
 

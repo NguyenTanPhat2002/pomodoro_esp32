@@ -6,6 +6,7 @@ idf_component_register(SRCS "app_main.c"
                         esp_netif
                         nvs_flash
                         esp_http_client
+                        esp_http_server
                         json
                         mbedtls
                         driver
